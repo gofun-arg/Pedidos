@@ -9,6 +9,6 @@
   "pruneHours": 12,
   "fetchLimit": 50,
   "forceFilterByDevice": false,
-  "startSequence": 5849904,
+  "startSequence": 5848140,
   "autoArchiveMin": 60
 }
