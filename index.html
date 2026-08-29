@@ -883,6 +883,31 @@
     </div>
     <div class="help">Marcá las estaciones que querés ver. Sin ninguna marcada, se muestran todas.</div>
 
+    <label>Categorías a mostrar</label>
+    <div id="cfgCategoriesList" style="
+      background:var(--gf-bg);border:1px solid var(--gf-border2);
+      border-radius:6px;padding:6px 4px;">
+      <label class="station-check-row">
+        <input type="checkbox" id="cfgCatComida">
+        <span class="station-check-label">Comida</span>
+      </label>
+      <label class="station-check-row">
+        <input type="checkbox" id="cfgCatBebida">
+        <span class="station-check-label">Bebida</span>
+      </label>
+      <label class="station-check-row">
+        <input type="checkbox" id="cfgCatOtros">
+        <span class="station-check-label">Otros</span>
+      </label>
+    </div>
+    <div class="help">Filtra los items dentro de cada tarjeta. Si un pedido se queda sin items visibles, la tarjeta se oculta entera.</div>
+
+    <label>ID de IVA — Comida</label>
+    <input id="cfgFoodVatId" type="number" placeholder="ej. 276">
+    <label>ID de IVA — Bebida</label>
+    <input id="cfgDrinkVatId" type="number" placeholder="ej. 275">
+    <div class="help">Mismos IDs que <code>app.foodList.vat.id</code> / <code>app.drinkList.vat.id</code> del printer_app. Cambian por evento — todo lo que no matchee ninguno de los dos cae en "Otros".</div>
+
     <label>Intervalo de actualización (segundos)</label>
     <input id="cfgPoll" type="number" min="1" max="60" value="3">
 
@@ -922,6 +947,7 @@ const LS = {
   OPERATORS: 'gofun2.' + _venueSlug + '.operators',  // Map<operatorId, {name, surname}>
   SEQ:       'gofun2.' + _venueSlug + '.sequence',   // long
   STATIONS:  'gofun2.' + _venueSlug + '.stations',   // Map<stationId, stationName>
+  CATALOG:   'gofun2.' + _venueSlug + '.catalog',    // Map<productId, vatId|null>
 };
 
 // Limpieza única de claves legadas (libera espacio y elimina datos contaminados)
@@ -945,6 +971,9 @@ const DEFAULT_CONFIG = {
   forceFilterByDevice: false,     // false = ver pedidos de todas las stations
   fetchLimit: 50,
   stationIds: [],                  // IDs de estaciones a mostrar; vacio = todas
+  foodVatId: null,                 // ID de IVA que identifica "Comida" (app.foodList.vat.id del printer)
+  drinkVatId: null,                // ID de IVA que identifica "Bebida" (app.drinkList.vat.id del printer)
+  categories: { comida: true, bebida: true, otros: true }, // Categorías a mostrar
 };
 
 const state = {
@@ -954,9 +983,11 @@ const state = {
   knownOrders: loadLS(LS.ORDERS, {}),
   operatorsMap: loadLS(LS.OPERATORS, {}),
   stationsMap: loadLS(LS.STATIONS, {}),  // {id: name}
+  catalogMap: loadLS(LS.CATALOG, {}),    // {productId: vatId|null}
   lastSequence: 0,
   pollTimer: null,
   operatorsTimer: null,
+  catalogTimer: null,
   undoTimer: null,
 };
 
@@ -1022,6 +1053,7 @@ function saveOrders() {
 function saveOperators() { localStorage.setItem(LS.OPERATORS, JSON.stringify(state.operatorsMap)); }
 function saveSequence()  { localStorage.setItem(LS.SEQ,       String(state.lastSequence)); }
 function saveStations()  { localStorage.setItem(LS.STATIONS,  JSON.stringify(state.stationsMap)); }
+function saveCatalog()   { localStorage.setItem(LS.CATALOG,   JSON.stringify(state.catalogMap)); }
 
 function pruneServed() {
   const cutoff = Date.now() - state.config.pruneHours * 3600 * 1000;
@@ -1089,6 +1121,30 @@ async function fetchOperators() {
   }
 }
 
+// Catálogo de productos → usado para resolver la categoría (Comida/Bebida/Otros)
+// de cada línea de pedido a partir de su vat.id. Mismo endpoint que usa el
+// printer_app.jar (GET /devices/configuration) para armar su event_data.txt.
+async function fetchCatalog() {
+  try {
+    const resp = await apiGet('/devices/configuration');
+    const catalogs = Array.isArray(resp?.catalogs) ? resp.catalogs : [];
+    const map = {};
+    let productCount = 0;
+    for (const catalog of catalogs) {
+      for (const p of (catalog.products || [])) {
+        if (p.id == null) continue;
+        map[String(p.id)] = (p.vat && p.vat.id != null) ? Number(p.vat.id) : null;
+        productCount++;
+      }
+    }
+    state.catalogMap = map;
+    saveCatalog();
+    console.log(`[catálogo] ${productCount} productos cargados`);
+  } catch (e) {
+    console.warn('[catálogo] No se pudo cargar:', e.message);
+  }
+}
+
 async function fetchTransactionsFromAPI() {
   const resp = await apiGet('/devices/orders', {
     limit: state.config.fetchLimit,
@@ -1119,6 +1175,7 @@ function slimTransaction(t) {
       value:                l.value,
       price:                l.price,
       item_entity:          l.item_entity,
+      itemId:               l.itemId,
       parent_order_line_id: l.parent_order_line_id,
     })),
     order_payments: (Array.isArray(t.order_payments) ? t.order_payments : []).map(p => ({
@@ -1185,17 +1242,51 @@ function getOperatorName(operatorId) {
   return full || '';
 }
 
+// Resuelve la categoría (comida/bebida/otros) de un producto a partir del
+// vat.id de su catálogo (mismo criterio que usa printer_app.jar para separar
+// los tickets). Todo lo que no matchea food ni drink cae en "otros" — así
+// nunca se pierde un producto por un IVA mal cargado o sin configurar.
+function categoryOfVat(vatId) {
+  if (vatId == null) return 'otros';
+  const foodId  = state.config.foodVatId  != null && state.config.foodVatId  !== '' ? Number(state.config.foodVatId)  : null;
+  const drinkId = state.config.drinkVatId != null && state.config.drinkVatId !== '' ? Number(state.config.drinkVatId) : null;
+  if (foodId  != null && vatId === foodId)  return 'comida';
+  if (drinkId != null && vatId === drinkId) return 'bebida';
+  return 'otros';
+}
+
+function isCategoryVisible(cat) {
+  const cats = state.config.categories || DEFAULT_CONFIG.categories;
+  return cats[cat] !== false;
+}
+
+// Devuelve una copia de la orden con products filtrado según las categorías
+// tildadas en Configuración. Si el pedido tenía productos pero ninguno quedó
+// visible, devuelve null (la tarjeta se oculta entera).
+function applyCategoryFilter(o) {
+  const original = o.products || [];
+  if (original.length === 0) return o;
+  const filtered = original.filter(p => isCategoryVisible(p.category));
+  if (filtered.length === original.length) return o;
+  if (filtered.length === 0) return null;
+  return { ...o, products: filtered };
+}
+
 function normalizeTransaction(t) {
   // Productos: solo top-level (PRODUCT, sin parent), con cantidades
   const lines = Array.isArray(t.order_lines) ? t.order_lines : [];
   const topProducts = lines
     .filter(l => (l.item_entity || '').toUpperCase() === 'PRODUCT' && !l.parent_order_line_id)
-    .map(l => ({
-      name: l.name || '',
-      qty: l.quantity || 1,
-      price: Number(l.value ?? l.price ?? 0),
-      lineId: l.id,
-    }));
+    .map(l => {
+      const vatId = l.itemId != null ? state.catalogMap[String(l.itemId)] : null;
+      return {
+        name: l.name || '',
+        qty: l.quantity || 1,
+        price: Number(l.value ?? l.price ?? 0),
+        lineId: l.id,
+        category: categoryOfVat(vatId ?? null),
+      };
+    });
 
   // Modificadores: ver si hay sub-lineas para mostrar como detalle.
   // Excluimos IVA y otros impuestos que la API manda como sub-linea con parent.
@@ -1306,10 +1397,12 @@ async function startPolling() {
   if (state.operatorsTimer) clearInterval(state.operatorsTimer);
 
   if (state.config.mode === 'live') {
-    // Cargar operadores ANTES del primer poll para que las tarjetas
-    // muestren el nombre del operador desde el primer render.
-    await fetchOperators();
+    // Cargar operadores y catálogo ANTES del primer poll para que las
+    // tarjetas muestren nombre de operador y categoría correcta desde el
+    // primer render.
+    await Promise.all([fetchOperators(), fetchCatalog()]);
     state.operatorsTimer = setInterval(fetchOperators, 5 * 60 * 1000);
+    state.catalogTimer = setInterval(fetchCatalog, 5 * 60 * 1000);
   }
 
   pollOnce();
@@ -1356,6 +1449,7 @@ function render() {
   const allowedStations = (state.config.stationIds || []).map(Number).filter(n => !Number.isNaN(n));
   const seenStations = new Map();
   let hiddenByStation = 0;
+  let hiddenByCategory = 0;
 
   const pending = [], served = [], refunded = [];
   for (const o of state.orders) {
@@ -1365,9 +1459,11 @@ function render() {
       hiddenByStation++;
       continue;
     }
-    if (state.refundedMap[o.id]) refunded.push(o);
-    else if (state.servedMap[o.id]) served.push(o);
-    else pending.push(o);
+    const oc = applyCategoryFilter(o);
+    if (!oc) { hiddenByCategory++; continue; }
+    if (state.refundedMap[oc.id]) refunded.push(oc);
+    else if (state.servedMap[oc.id]) served.push(oc);
+    else pending.push(oc);
   }
 
   if (!state._loggedStations) state._loggedStations = new Set();
@@ -1384,6 +1480,7 @@ function render() {
   }
   if (stationsUpdated) saveStations();
   if (allowedStations.length > 0 && hiddenByStation > 0) console.log(`[stations] ${hiddenByStation} pedidos ocultos por filtro (${allowedStations.join(',')})`);
+  if (hiddenByCategory > 0) console.log(`[categorías] ${hiddenByCategory} pedidos ocultos (sin items en las categorías tildadas)`);
 
   pending.sort((a,b) => new Date(a.date) - new Date(b.date));
   served.sort((a,b) => (state.servedMap[b.id]?.at||0) - (state.servedMap[a.id]?.at||0));
@@ -1718,9 +1815,11 @@ function refreshTotals() {
   for (const o of state.orders) {
     const sid = o.raw && o.raw.station ? Number(o.raw.station.id) : null;
     if (allowedStations.length > 0 && (sid == null || !allowedStations.includes(sid))) continue;
-    if (state.refundedMap[o.id]) refunded.push(o);
-    else if (state.servedMap[o.id]) served.push(o);
-    else pending.push(o);
+    const oc = applyCategoryFilter(o);
+    if (!oc) continue;
+    if (state.refundedMap[oc.id]) refunded.push(oc);
+    else if (state.servedMap[oc.id]) served.push(oc);
+    else pending.push(oc);
   }
 
   renderTotalsCol(document.getElementById('tListPending'), document.getElementById('tGrandPending'), document.getElementById('tSubPending'), pending);
@@ -1771,9 +1870,11 @@ function buildShiftSummaryText() {
   for (const o of orders) {
     const sid = o.raw && o.raw.station ? Number(o.raw.station.id) : null;
     if (allowedStations.length > 0 && (sid == null || !allowedStations.includes(sid))) continue;
-    if (state.refundedMap[o.id]) refunded.push(o);
-    else if (state.servedMap[o.id]) served.push(o);
-    else pending.push(o);
+    const oc = applyCategoryFilter(o);
+    if (!oc) continue;
+    if (state.refundedMap[oc.id]) refunded.push(oc);
+    else if (state.servedMap[oc.id]) served.push(oc);
+    else pending.push(oc);
   }
 
   const aServed   = aggregateProducts(served);
@@ -1901,6 +2002,9 @@ async function loadVenueConfig() {
       stationIds:   over.stationIds  !== undefined ? over.stationIds  : (cfg.stationIds  || []),
       pollSec:      over.pollSec     !== undefined ? over.pollSec     : (cfg.pollSec     || 3),
       pruneHours:   over.pruneHours  !== undefined ? over.pruneHours  : (cfg.pruneHours  || 6),
+      foodVatId:    over.foodVatId   !== undefined ? over.foodVatId   : (cfg.foodVatId   ?? null),
+      drinkVatId:   over.drinkVatId  !== undefined ? over.drinkVatId  : (cfg.drinkVatId  ?? null),
+      categories:   over.categories  !== undefined ? over.categories  : (cfg.categories  || DEFAULT_CONFIG.categories),
     };
     saveConfig();
 
@@ -1937,6 +2041,12 @@ async function loadVenueConfig() {
 function openSettings() {
   document.getElementById('cfgPoll').value  = state.config.pollSec    || 3;
   document.getElementById('cfgPrune').value = state.config.pruneHours || 6;
+  document.getElementById('cfgFoodVatId').value  = state.config.foodVatId  ?? '';
+  document.getElementById('cfgDrinkVatId').value = state.config.drinkVatId ?? '';
+  const cats = state.config.categories || DEFAULT_CONFIG.categories;
+  document.getElementById('cfgCatComida').checked = cats.comida !== false;
+  document.getElementById('cfgCatBebida').checked = cats.bebida !== false;
+  document.getElementById('cfgCatOtros').checked  = cats.otros  !== false;
   document.getElementById('cfgVenueName').textContent = state.config.venueName || state.config.venueSlug || '—';
   document.getElementById('cfgStatusInfo').innerHTML =
     `<span style="font-size:15px;font-weight:700;color:var(--gf-text);">${state.lastSequence.toLocaleString('es-AR')}</span>
@@ -1972,6 +2082,7 @@ function closeSettings() {
 function stopPolling() {
   if (state.pollTimer)      { clearInterval(state.pollTimer);      state.pollTimer = null; }
   if (state.operatorsTimer) { clearInterval(state.operatorsTimer); state.operatorsTimer = null; }
+  if (state.catalogTimer)   { clearInterval(state.catalogTimer);   state.catalogTimer = null; }
 }
 
 document.getElementById('btnSettings').addEventListener('click', openSettings);
@@ -1983,16 +2094,29 @@ document.getElementById('btnSave').addEventListener('click', () => {
   const pollSec    = parseInt(document.getElementById('cfgPoll').value,  10) || 3;
   const pruneHours = parseInt(document.getElementById('cfgPrune').value, 10) || 6;
 
+  const foodVatIdRaw  = document.getElementById('cfgFoodVatId').value.trim();
+  const drinkVatIdRaw = document.getElementById('cfgDrinkVatId').value.trim();
+  const foodVatId  = foodVatIdRaw  === '' ? null : parseInt(foodVatIdRaw,  10);
+  const drinkVatId = drinkVatIdRaw === '' ? null : parseInt(drinkVatIdRaw, 10);
+  const categories = {
+    comida: document.getElementById('cfgCatComida').checked,
+    bebida: document.getElementById('cfgCatBebida').checked,
+    otros:  document.getElementById('cfgCatOtros').checked,
+  };
+
   state.config.stationIds  = stationIds;
   state.config.pollSec     = pollSec;
   state.config.pruneHours  = pruneHours;
+  state.config.foodVatId   = foodVatId;
+  state.config.drinkVatId  = drinkVatId;
+  state.config.categories  = categories;
   saveConfig();
 
   // Guardar overrides del local por separado (sobreviven un reload de config)
   const venue = state.config.venueSlug || '';
   if (venue) {
     localStorage.setItem('gofun2.overrides.' + venue,
-      JSON.stringify({ stationIds, pollSec, pruneHours }));
+      JSON.stringify({ stationIds, pollSec, pruneHours, foodVatId, drinkVatId, categories }));
   }
 
   stopPolling();
