@@ -1,14 +1,8 @@
 {
   "venueName": "LaCity",
-  "apiUrl": "https://api-ego.easygoband.com/prod-v2",
   "apiKey": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIzYThmMmZmNS0wMmFhLTRkMDktYWIwMi02ZGRiODBhMGZjZmMiLCJhdWQiOiJhNzFkMzA0MS1lM2RiLTQ5NDYtOGFlNC00OWVlMTBjMjE1OTkiLCJpc3MiOiJBUEkgRUdPIiwiaWF0IjoxNzYwNDA1MTY5LCJzZXEiOiJkNGQzNDUzZS04NjQzLTQ0YTAtOWRmZC1lNTdkZTAxMzM4NGIifQ.a3LPUJ58eukv_Zeshoqbb1mm4W0awsF_h5yZXgFd-lQ",
+  "startSequence": 5918803,
   "stationIds": [
     1697
-  ],
-  "pollSec": 3,
-  "pruneHours": 12,
-  "fetchLimit": 50,
-  "forceFilterByDevice": false,
-  "startSequence": 5849904,
-  "autoArchiveMin": 60
+  ]
 }
