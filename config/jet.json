@@ -1,14 +1,8 @@
 {
   "venueName": "Jet",
-  "apiUrl": "https://api-ego.easygoband.com/prod-v2",
   "apiKey": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI0ZTRjZWZmNS1kZDgxLTQ3YzYtODg5My1lMDc3MmM2NzNlMzIiLCJhdWQiOiIyODMwZGNiOC1kMTFhLTRlYjQtOWI0YS04N2I1NWZlMDhkMGYiLCJpc3MiOiJBUEkgRUdPIiwiaWF0IjoxNzIwODAxMjIxLCJzZXEiOiI1ZmFiNmMxMi1jZDIzLTRjZjMtOGM2Ni0xMzRmZWU0ZDEzNDYifQ.focx85apnU9dbCqTVlw5ihwomyUtLI231xi7uQGJG1o",
+  "startSequence": 5918803,
   "stationIds": [
     146
-  ],
-  "pollSec": 3,
-  "pruneHours": 12,
-  "fetchLimit": 50,
-  "forceFilterByDevice": false,
-  "startSequence": 5849904,
-  "autoArchiveMin": 60
+  ]
 }
